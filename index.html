@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Link Your Bank Account</title>
+    <script type="text/javascript" src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+</head>
+<body>
+    <h2>Link Your Bank Account</h2>
+    <button id="link-button">Link Bank Account</button>
+
+    <script type="text/javascript">
+        var handler = Plaid.create({
+            clientName: 'Fraud detection',
+            env: 'sandbox',
+            key: '67e196f190625d0022c98475',  // Replace with your public key
+            product: ['auth', 'transactions'],
+            onSuccess: function(public_token, metadata) {
+                fetch('/exchange_public_token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ public_token: public_token })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Access Token:', data.access_token);
+                })
+                .catch((error) => {
+                    console.error('Error:', error);
+                });
+            },
+            onExit: function(err, metadata) {
+                if (err != null) {
+                    console.log(err);
+                }
+            }
+        });
+
+        document.getElementById('link-button').onclick = function() {
+            handler.open();
+        };
+    </script>
+</body>
+</html>

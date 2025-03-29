@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fraud Detection Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .fraudulent {
+            background-color: #ffebee;
+        }
+        .transaction-card {
+            margin-bottom: 1rem;
+            transition: all 0.3s ease;
+        }
+        .transaction-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        #errorMessage {
+            display: none;
+            margin-top: 1rem;
+        }
+        .loading {
+            display: none;
+            margin-top: 1rem;
+        }
+        #statusMessage {
+            margin-top: 1rem;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-5">
+        <h1 class="mb-4">Fraud Detection Dashboard</h1>
+        
+        <div class="row mb-4">
+            <div class="col">
+                <button id="linkAccount" class="btn btn-primary">Link Bank Account</button>
+            </div>
+        </div>
+
+        <div id="errorMessage" class="alert alert-danger" role="alert">
+            <!-- Error messages will be displayed here -->
+        </div>
+
+        <div id="statusMessage" class="alert alert-info" role="alert">
+            <!-- Status messages will be displayed here -->
+        </div>
+
+        <div id="loading" class="loading text-center">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mt-2" id="loadingText">Loading...</p>
+        </div>
+
+        <div id="transactionsContainer" class="row">
+            <!-- Transactions will be displayed here -->
+        </div>
+    </div>
+
+    <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+    <script>
+        let accessToken = null;
+        let handler = null;
+
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            setTimeout(() => {
+                errorDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        function hideError() {
+            document.getElementById('errorMessage').style.display = 'none';
+        }
+
+        function showStatus(message) {
+            const statusDiv = document.getElementById('statusMessage');
+            statusDiv.textContent = message;
+            statusDiv.style.display = 'block';
+            setTimeout(() => {
+                statusDiv.style.display = 'none';
+            }, 3000);
+        }
+
+        function showLoading(message = 'Loading...') {
+            document.getElementById('loadingText').textContent = message;
+            document.getElementById('loading').style.display = 'block';
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        document.getElementById('linkAccount').onclick = async () => {
+            try {
+                hideError();
+                showLoading('Initializing Plaid Link...');
+                const response = await fetch('/create_link_token');
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                if (!data.link_token) {
+                    throw new Error('Failed to get link token');
+                }
+
+                showStatus('Plaid Link initialized successfully');
+
+                // Create handler only when needed
+                handler = Plaid.create({
+                    token: data.link_token,
+                    language: 'en',
+                    countryCodes: ['US'],
+                    env: 'sandbox',
+                    product: ['auth', 'transactions'],
+                    onSuccess: async (public_token, metadata) => {
+                        try {
+                            showLoading('Connecting to your bank...');
+                            const response = await fetch('/exchange_public_token', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({ public_token }),
+                            });
+                            const data = await response.json();
+                            if (data.error) {
+                                throw new Error(data.error);
+                            }
+                            accessToken = data.access_token;
+                            showStatus('Successfully connected to your bank');
+                            await fetchTransactions();
+                        } catch (error) {
+                            console.error('Error exchanging token:', error);
+                            showError('Failed to connect to your bank. Please try again.');
+                        } finally {
+                            hideLoading();
+                        }
+                    },
+                    onExit: (err, metadata) => {
+                        hideLoading();
+                        if (err != null) {
+                            console.log('Plaid Link exit with error:', err);
+                            showError('Connection process was interrupted. Please try again.');
+                        }
+                    },
+                    onEvent: (eventName, metadata) => {
+                        console.log('Plaid Link event:', eventName, metadata);
+                    },
+                    onLoad: () => {
+                        console.log('Plaid Link loaded');
+                        hideLoading();
+                    },
+                    onError: (error, metadata) => {
+                        console.error('Plaid Link error:', error);
+                        showError('An error occurred while connecting to your bank. Please try again.');
+                        hideLoading();
+                    }
+                });
+
+                handler.open();
+            } catch (error) {
+                console.error('Error creating link token:', error);
+                showError(error.message || 'Failed to initialize bank connection. Please try again.');
+                hideLoading();
+            }
+        };
+
+        async function fetchTransactions() {
+            if (!accessToken) {
+                showError('No access token available. Please connect your bank account first.');
+                return;
+            }
+
+            try {
+                showLoading('Fetching your transactions...');
+                const response = await fetch('/get_transactions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ access_token: accessToken }),
+                });
+                
+                // Log the raw response
+                console.log('Raw response:', response);
+                
+                const data = await response.json();
+                console.log('Response data:', data);  // Debug log
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                if (!data.fraud_analysis || !Array.isArray(data.fraud_analysis)) {
+                    console.error('Invalid fraud analysis data:', data.fraud_analysis);
+                    throw new Error('Invalid transaction data received');
+                }
+                
+                displayTransactions(data.fraud_analysis);
+                showStatus('Successfully loaded transactions');
+            } catch (error) {
+                console.error('Error fetching transactions:', error);
+                console.error('Error details:', {
+                    name: error.name,
+                    message: error.message,
+                    stack: error.stack
+                });
+                showError('Failed to fetch transactions. Please try again.');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function displayTransactions(transactions) {
+            console.log('Displaying transactions:', transactions);  // Debug log
+            const container = document.getElementById('transactionsContainer');
+            container.innerHTML = '';
+
+            if (!transactions || transactions.length === 0) {
+                container.innerHTML = '<div class="col-12"><div class="alert alert-info">No transactions found.</div></div>';
+                return;
+            }
+
+            transactions.forEach((transaction, index) => {
+                console.log(`Processing transaction ${index}:`, transaction);  // Debug log
+                try {
+                    const card = document.createElement('div');
+                    card.className = `col-md-6 col-lg-4 transaction-card ${transaction.is_fraudulent ? 'fraudulent' : ''}`;
+                    
+                    card.innerHTML = `
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">${transaction.merchant_name || 'Unknown Merchant'}</h5>
+                                <p class="card-text">
+                                    Amount: $${Math.abs(parseFloat(transaction.amount || 0)).toFixed(2)}<br>
+                                    Date: ${transaction.date ? new Date(transaction.date).toLocaleDateString() : 'N/A'}<br>
+                                    Category: ${transaction.category ? transaction.category.join(', ') : 'Uncategorized'}<br>
+                                    Status: ${transaction.is_fraudulent ? '<span class="text-danger">Potential Fraud</span>' : '<span class="text-success">Safe</span>'}
+                                </p>
+                                <div class="progress mb-2">
+                                    <div class="progress-bar ${transaction.is_fraudulent ? 'bg-danger' : 'bg-success'}" 
+                                         role="progressbar" 
+                                         style="width: ${Math.abs((transaction.fraud_score || 0) * 100)}%">
+                                        Risk Score: ${Math.abs(parseFloat(transaction.fraud_score || 0)).toFixed(2)}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    container.appendChild(card);
+                } catch (error) {
+                    console.error(`Error displaying transaction ${index}:`, error);
+                    console.error('Problematic transaction:', transaction);
+                }
+            });
+        }
+    </script>
+</body>
+</html>
