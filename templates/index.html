@@ -30,41 +30,84 @@
             display: none;
         }
     </style>
+    <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
 </head>
 <body>
     <div class="container mt-5">
-        <h1 class="mb-4">Fraud Detection Dashboard</h1>
-        
-        <div class="row mb-4">
-            <div class="col">
-                <button id="linkAccount" class="btn btn-primary">Link Bank Account</button>
+        <div class="row">
+            <!-- Existing transactions column -->
+            <div class="col-md-8">
+                <h1 class="mb-4">Fraud Detection Dashboard</h1>
+                <div class="row mb-4">
+                    <div class="col">
+                        <button id="linkAccount" class="btn btn-primary">Link Bank Account</button>
+                    </div>
+                </div>
+
+                <div id="errorMessage" class="alert alert-danger" role="alert">
+                    <!-- Error messages will be displayed here -->
+                </div>
+
+                <div id="statusMessage" class="alert alert-info" role="alert">
+                    <!-- Status messages will be displayed here -->
+                </div>
+
+                <div id="loading" class="loading text-center">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2" id="loadingText">Loading...</p>
+                </div>
+
+                <div id="transactionsContainer" class="row">
+                    <!-- Transactions will be displayed here -->
+                </div>
             </div>
-        </div>
-
-        <div id="errorMessage" class="alert alert-danger" role="alert">
-            <!-- Error messages will be displayed here -->
-        </div>
-
-        <div id="statusMessage" class="alert alert-info" role="alert">
-            <!-- Status messages will be displayed here -->
-        </div>
-
-        <div id="loading" class="loading text-center">
-            <div class="spinner-border text-primary" role="status">
-                <span class="visually-hidden">Loading...</span>
+            
+            <!-- New metrics column -->
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h4>Model Performance Metrics</h4>
+                    </div>
+                    <div class="card-body">
+                        <!-- Real-time metrics -->
+                        <div class="metric-box">
+                            <h5>Current Session</h5>
+                            <ul class="list-group">
+                                <li class="list-group-item">
+                                    Transactions Analyzed: <span id="totalTransactions">0</span>
+                                </li>
+                                <li class="list-group-item">
+                                    Fraud Detected: <span id="fraudDetected">0</span>
+                                </li>
+                                <li class="list-group-item">
+                                    Average Risk Score: <span id="avgRiskScore">0</span>
+                                </li>
+                            </ul>
+                        </div>
+                        
+                        <!-- Charts -->
+                        <div class="mt-4">
+                            <canvas id="riskDistribution"></canvas>
+                        </div>
+                        <div class="mt-4">
+                            <canvas id="categoryRisks"></canvas>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <p class="mt-2" id="loadingText">Loading...</p>
-        </div>
-
-        <div id="transactionsContainer" class="row">
-            <!-- Transactions will be displayed here -->
         </div>
     </div>
 
-    <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
         let accessToken = null;
         let handler = null;
+
+        let riskDistributionChart;
+        let categoryRisksChart;
 
         function showError(message) {
             const errorDiv = document.getElementById('errorMessage');
@@ -263,7 +306,119 @@
                     console.error('Problematic transaction:', transaction);
                 }
             });
+
+            updateMetrics(transactions);
         }
+
+        function updateMetrics(transactions) {
+            // Update basic metrics
+            const totalTx = transactions.length;
+            const fraudulentTx = transactions.filter(t => t.is_fraudulent).length;
+            const avgRisk = transactions.reduce((acc, t) => acc + t.fraud_score, 0) / totalTx;
+
+            document.getElementById('totalTransactions').textContent = totalTx;
+            document.getElementById('fraudDetected').textContent = fraudulentTx;
+            document.getElementById('avgRiskScore').textContent = avgRisk.toFixed(3);
+
+            // Update risk distribution chart
+            const riskScores = transactions.map(t => t.fraud_score);
+            updateRiskDistributionChart(riskScores);
+
+            // Update category risks
+            const categoryRisks = calculateCategoryRisks(transactions);
+            updateCategoryRisksChart(categoryRisks);
+        }
+
+        function updateRiskDistributionChart(riskScores) {
+            const ctx = document.getElementById('riskDistribution').getContext('2d');
+            
+            if (riskDistributionChart) {
+                riskDistributionChart.destroy();
+            }
+
+            riskDistributionChart = new Chart(ctx, {
+                type: 'histogram',
+                data: {
+                    datasets: [{
+                        label: 'Risk Score Distribution',
+                        data: riskScores,
+                        borderColor: 'rgb(75, 192, 192)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+
+        function calculateCategoryRisks(transactions) {
+            const categories = {};
+            
+            transactions.forEach(tx => {
+                const category = tx.category[0] || 'Unknown';
+                if (!categories[category]) {
+                    categories[category] = {
+                        total: 0,
+                        risky: 0,
+                        avgRisk: 0
+                    };
+                }
+                
+                categories[category].total++;
+                if (tx.is_fraudulent) categories[category].risky++;
+                categories[category].avgRisk += tx.fraud_score;
+            });
+
+            // Calculate averages
+            Object.values(categories).forEach(cat => {
+                cat.avgRisk = cat.avgRisk / cat.total;
+            });
+
+            return categories;
+        }
+
+        function updateCategoryRisksChart(categoryRisks) {
+            const ctx = document.getElementById('categoryRisks').getContext('2d');
+            
+            if (categoryRisksChart) {
+                categoryRisksChart.destroy();
+            }
+
+            const labels = Object.keys(categoryRisks);
+            const riskData = labels.map(cat => categoryRisks[cat].avgRisk);
+
+            categoryRisksChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Average Risk by Category',
+                        data: riskData,
+                        backgroundColor: 'rgba(255, 99, 132, 0.5)'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+
+        // Add periodic updates
+        setInterval(async () => {
+            const metrics = await fetch('/model_metrics').then(r => r.json());
+            updateDashboardMetrics(metrics);
+        }, 30000);  // Update every 30 seconds
     </script>
 </body>
 </html>
